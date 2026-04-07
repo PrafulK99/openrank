@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
 
-// Repository configuration
-const REPO_OWNER = "PrafulK99";
-const REPO_NAME = "devcanvas";
-
 // Scoring system
 const SCORES = {
   PR_OPENED: 5,
@@ -40,6 +36,10 @@ interface ContributorStats {
 
 interface LeaderboardResponse {
   success: boolean;
+  repo?: {
+    owner: string;
+    name: string;
+  };
   data?: ContributorStats[];
   error?: string;
 }
@@ -72,6 +72,31 @@ async function fetchGitHubAPI(url: string): Promise<unknown[]> {
 }
 
 /**
+ * Parse excluded usernames from environment variable
+ */
+function getExcludedUsers(): Set<string> {
+  const excludedVar = process.env.GITHUB_EXCLUDED_USERS;
+
+  if (!excludedVar || excludedVar.trim() === "") {
+    return new Set();
+  }
+
+  return new Set(
+    excludedVar
+      .split(",")
+      .map((user) => user.trim().toLowerCase())
+      .filter((user) => user.length > 0)
+  );
+}
+
+/**
+ * Check if username is excluded
+ */
+function isExcludedUser(username: string, excludedUsers: Set<string>): boolean {
+  return excludedUsers.has(username.toLowerCase());
+}
+
+/**
  * Check if username is a bot
  */
 function isBot(username: string): boolean {
@@ -101,6 +126,25 @@ function calculateScore(stats: ContributorStats): number {
 
 export async function GET(): Promise<NextResponse<LeaderboardResponse>> {
   try {
+    // Read repository configuration from environment variables
+    const REPO_OWNER = process.env.GITHUB_REPO_OWNER;
+    const REPO_NAME = process.env.GITHUB_REPO_NAME;
+
+    // Validate required environment variables
+    if (!REPO_OWNER || !REPO_NAME) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Missing required environment variables: GITHUB_REPO_OWNER and GITHUB_REPO_NAME",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Get excluded users
+    const excludedUsers = getExcludedUsers();
+
     // Fetch PRs and Issues in parallel
     const prUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=all&per_page=100`;
     const issueUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues?state=all&per_page=100`;
@@ -122,6 +166,9 @@ export async function GET(): Promise<NextResponse<LeaderboardResponse>> {
 
       // Skip bots
       if (isBot(username)) continue;
+
+      // Skip excluded users
+      if (isExcludedUser(username, excludedUsers)) continue;
 
       // Skip if not within last 30 days
       if (!isWithinLast30Days(pr.created_at)) continue;
@@ -154,6 +201,9 @@ export async function GET(): Promise<NextResponse<LeaderboardResponse>> {
       // Skip bots
       if (isBot(username)) continue;
 
+      // Skip excluded users
+      if (isExcludedUser(username, excludedUsers)) continue;
+
       // Skip if not within last 30 days
       if (!isWithinLast30Days(issue.created_at)) continue;
 
@@ -182,12 +232,18 @@ export async function GET(): Promise<NextResponse<LeaderboardResponse>> {
         ...contributor,
         score: calculateScore(contributor),
       }))
+      // Filter out excluded users
+      .filter((contributor) => !isExcludedUser(contributor.username, excludedUsers))
       // Sort by score (descending)
       .sort((a, b) => b.score - a.score);
 
     return NextResponse.json(
       {
         success: true,
+        repo: {
+          owner: REPO_OWNER,
+          name: REPO_NAME,
+        },
         data: leaderboard,
       },
       { status: 200 }
